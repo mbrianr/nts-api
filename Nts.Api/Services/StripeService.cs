@@ -18,11 +18,36 @@ public class StripeService
     private string GetFrontendUrl() => _cfg["Stripe:FrontendUrl"] ?? Environment.GetEnvironmentVariable("FRONTEND_URL") ?? "nts://";
     private string GetPriceId() => _cfg["Stripe:PriceId"] ?? Environment.GetEnvironmentVariable("STRIPE_PRICE_ID") ?? "";
     private string GetWebhookSecret() => _cfg["Stripe:WebhookSecret"] ?? Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") ?? "";
+
+    // Cuentas del dueño: premium permanente sin pasar por Stripe.
+    // Se configura con OWNER_EMAILS="yo@dominio.com,otro@dominio.com".
+    private static readonly string[] OwnerEmails = (Environment.GetEnvironmentVariable("OWNER_EMAILS") ?? "")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(email => email.ToLowerInvariant())
+        .ToArray();
+
+    public static bool IsOwner(string? email) =>
+        !string.IsNullOrWhiteSpace(email) &&
+        OwnerEmails.Contains(email.Trim().ToLowerInvariant());
     //get subs status
     public async Task<object> GetSubscriptionStatus(AppDbContext db, int userId)
     {
         var user = await db.Users.Include(u => u.Subscription).FirstOrDefaultAsync(u => u.Id == userId);
         if (user == null) throw new Exception("User not found");
+
+        // El dueño tiene acceso permanente, sin suscripción ni trial que vencer.
+        if (IsOwner(user.Email))
+        {
+            return new
+            {
+                status = "active",
+                trialEndsAt = user.TrialEndsAt?.ToString("o"),
+                currentPeriodEnd = (string?)null,
+                cancelAtPeriodEnd = false,
+                owner = true
+            };
+        }
+
         var now = DateTime.UtcNow;
         //subs active?
         if (user.Subscription != null)
@@ -68,6 +93,7 @@ public class StripeService
         if (string.IsNullOrEmpty(priceId)) throw new Exception("Stripe checkout is nto configured");
         var user = await db.Users.FindAsync(userId);
         if (user == null) throw new Exception("user not found");
+        if (IsOwner(user.Email)) throw new Exception("Owner account already has premium access");
         var customerId = user.StripeCustomerId;
 
         //create customer if not exist yet
@@ -114,6 +140,7 @@ public class StripeService
         var user = await db.Users.Include(u => u.Subscription).FirstOrDefaultAsync(u => u.Id == userId);
 
         if (user == null) throw new Exception("User not found");
+        if (IsOwner(user.Email)) throw new Exception("Owner account has no billing to manage");
         if (string.IsNullOrEmpty(user.StripeCustomerId) || user.Subscription == null) throw new Exception("No active subscription found to manage");
 
         var portalService = new Stripe.BillingPortal.SessionService();
