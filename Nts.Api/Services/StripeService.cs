@@ -64,6 +64,14 @@ public class StripeService
 
                 };
             }
+            // Suscripción terminada (fin de período o reembolso): no vuelve al trial.
+            return new
+            {
+                status = "expired",
+                trialEndsAt = user.TrialEndsAt?.ToString("o"),
+                currentPeriodEnd = (string?)null,
+                cancelAtPeriodEnd = false
+            };
         }
 
         // test period
@@ -173,6 +181,15 @@ public class StripeService
                     if (sub != null) await SyncSubscription(db, sub);
                     break;
                 }
+            case EventTypes.ChargeRefunded:
+                {
+                    var charge = stripeEvent.Data.Object as Stripe.Charge;
+                    if (charge == null) break;
+                    // Un reembolso parcial no corta el acceso; el total sí.
+                    var fullyRefunded = charge.Refunded || (charge.Amount > 0 && charge.AmountRefunded >= charge.Amount);
+                    if (fullyRefunded) await RevokeAccessOnFullRefund(db, charge);
+                    break;
+                }
             case EventTypes.CustomerSubscriptionDeleted:
                 {
                     var sub = stripeEvent.Data.Object as Stripe.Subscription;
@@ -258,6 +275,43 @@ public class StripeService
                 CancelAtPeriodEnd = stripeSub.CancelAtPeriodEnd
             });
         }
+        await db.SaveChangesAsync();
+    }
+    // El reembolso total corta el acceso ya y cancela la suscripción en Stripe:
+    // si no se cancela, el próximo cobro la reactivaría vía customer.subscription.updated.
+    private async Task RevokeAccessOnFullRefund(AppDbContext db, Stripe.Charge charge)
+    {
+        var customerId = charge.CustomerId;
+        if (string.IsNullOrEmpty(customerId)) return;
+
+        var user = await db.Users.FirstOrDefaultAsync(u => u.StripeCustomerId == customerId);
+        if (user == null) return;
+
+        var subscription = await db.Subscriptions.FirstOrDefaultAsync(s => s.UserId == user.Id);
+        if (subscription == null) return;
+
+        if (!string.IsNullOrEmpty(subscription.StripeSubscriptionId))
+        {
+            var subService = new SubscriptionService();
+            try
+            {
+                var stripeSub = await subService.GetAsync(subscription.StripeSubscriptionId);
+                if (stripeSub.Status != "canceled")
+                {
+                    await subService.CancelAsync(subscription.StripeSubscriptionId);
+                }
+            }
+            catch (StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                // La suscripción ya no existe en Stripe; el acceso local se corta igual.
+            }
+        }
+
+        var now = DateTime.UtcNow;
+        subscription.Status = "canceled";
+        subscription.CancelAtPeriodEnd = false;
+        subscription.CurrentPeriodEnd = now;
+        subscription.UpdatedAt = now;
         await db.SaveChangesAsync();
     }
 }
