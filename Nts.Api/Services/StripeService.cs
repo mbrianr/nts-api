@@ -59,7 +59,7 @@ public class StripeService
                 {
                     status = user.Subscription.Status,
                     trialEndsAt = user.TrialEndsAt?.ToString("o"),
-                    CurrentPeriodEnd = user.Subscription.CurrentPeriodEnd?.ToString("o"),
+                    currentPeriodEnd = user.Subscription.CurrentPeriodEnd?.ToString("o"),
                     cancelAtPeriodEnd = user.Subscription.CancelAtPeriodEnd
 
                 };
