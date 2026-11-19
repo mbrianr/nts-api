@@ -185,9 +185,7 @@ public class StripeService
                 {
                     var charge = stripeEvent.Data.Object as Stripe.Charge;
                     if (charge == null) break;
-                    // Un reembolso parcial no corta el acceso; el total sí.
-                    var fullyRefunded = charge.Refunded || (charge.Amount > 0 && charge.AmountRefunded >= charge.Amount);
-                    if (fullyRefunded) await RevokeAccessOnFullRefund(db, charge);
+                    await RevokeAccessOnRefund(db, charge);
                     break;
                 }
             case EventTypes.CustomerSubscriptionDeleted:
@@ -277,9 +275,9 @@ public class StripeService
         }
         await db.SaveChangesAsync();
     }
-    // El reembolso total corta el acceso ya y cancela la suscripción en Stripe:
+    // Cualquier reembolso corta el acceso ya y cancela la suscripción en Stripe:
     // si no se cancela, el próximo cobro la reactivaría vía customer.subscription.updated.
-    private async Task RevokeAccessOnFullRefund(AppDbContext db, Stripe.Charge charge)
+    private async Task RevokeAccessOnRefund(AppDbContext db, Stripe.Charge charge)
     {
         var customerId = charge.CustomerId;
         if (string.IsNullOrEmpty(customerId)) return;
